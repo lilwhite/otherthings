@@ -1,0 +1,260 @@
+trigger: none
+
+parameters:
+- name: azureServiceConnection
+  type: string
+  default: 'YOUR-AZURE-SERVICE-CONNECTION'
+
+- name: subscriptionId
+  type: string
+  default: 'e76d4c12-0b6b-4a47-a714-fa2302974203'
+
+- name: region
+  type: string
+  default: 'westeurope'
+
+- name: configFile
+  type: string
+  default: 'RegionSubscriptionConfig.json'
+
+- name: migrationMode
+  displayName: Migration mode
+  type: string
+  default: aggregation
+  values:
+    - aggregation
+    - non-aggregation
+
+pool:
+  vmImage: ubuntu-latest
+
+
+stages:
+
+# ============================================================
+# STAGE 1 - ANALYSIS
+# ============================================================
+- stage: Analysis
+  displayName: 'Analyse NSG Flow Logs'
+  jobs:
+  - job: RunAnalysis
+    displayName: 'Run migration analysis'
+    steps:
+
+    - checkout: self
+
+    - task: AzurePowerShell@5
+      displayName: 'Validate Azure context'
+      inputs:
+        azureSubscription: '${{ parameters.azureServiceConnection }}'
+        ScriptType: InlineScript
+        azurePowerShellVersion: LatestVersion
+        pwsh: true
+        Inline: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Current Azure context:"
+          Get-AzContext
+
+          Set-AzContext `
+            -SubscriptionId "${{ parameters.subscriptionId }}"
+
+          Write-Host "Subscription selected:"
+          (Get-AzContext).Subscription
+
+    - task: PowerShell@2
+      displayName: 'Validate migration files'
+      inputs:
+        targetType: inline
+        pwsh: true
+        script: |
+          $ErrorActionPreference = "Stop"
+
+          $scriptPath = "$(Build.SourcesDirectory)/MigrationFromNsgToAzureFlowLogging.ps1"
+          $configPath = "$(Build.SourcesDirectory)/${{ parameters.configFile }}"
+
+          if (-not (Test-Path $scriptPath)) {
+              throw "Migration script not found: $scriptPath"
+          }
+
+          if (-not (Test-Path $configPath)) {
+              throw "Configuration file not found: $configPath"
+          }
+
+          Write-Host "Migration script: $scriptPath"
+          Write-Host "Configuration:    $configPath"
+
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+
+          if (-not $config.PSObject.Properties.Name.Contains(
+              "${{ parameters.subscriptionId }}"
+          )) {
+              throw "Subscription is not present in RegionSubscriptionConfig.json"
+          }
+
+          Write-Host "Scope configuration:"
+          Get-Content $configPath
+
+    - task: AzurePowerShell@5
+      displayName: 'Run NSG Flow Log analysis'
+      inputs:
+        azureSubscription: '${{ parameters.azureServiceConnection }}'
+        ScriptType: InlineScript
+        azurePowerShellVersion: LatestVersion
+        pwsh: true
+        Inline: |
+          $ErrorActionPreference = "Stop"
+
+          Set-AzContext `
+            -SubscriptionId "${{ parameters.subscriptionId }}"
+
+          $scriptPath = "$(Build.SourcesDirectory)/MigrationFromNsgToAzureFlowLogging.ps1"
+          $configPath = "$(Build.SourcesDirectory)/${{ parameters.configFile }}"
+
+          Write-Host "Running analysis for:"
+          Write-Host "Subscription: ${{ parameters.subscriptionId }}"
+          Write-Host "Region:       ${{ parameters.region }}"
+
+          #
+          # Expected interactive answers:
+          #
+          # 1 -> Run analysis
+          # configPath
+          # blank -> default 16 threads
+          # 4 -> Quit after analysis
+          #
+          $answers = @(
+              "1",
+              $configPath,
+              "",
+              "4"
+          )
+
+          $inputFile = "$(Agent.TempDirectory)/analysis-input.txt"
+
+          $answers -join "`n" |
+              Set-Content -Path $inputFile -NoNewline
+
+          Get-Content $inputFile |
+              pwsh -NoProfile -File $scriptPath
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Analysis script failed with exit code $LASTEXITCODE"
+          }
+
+    - task: CopyFiles@2
+      displayName: 'Collect analysis report'
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)'
+        Contents: |
+          AnalysisReport*.html
+        TargetFolder: '$(Build.ArtifactStagingDirectory)/analysis'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish analysis report'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/analysis'
+        artifact: 'NSG-FlowLog-Analysis'
+
+
+# ============================================================
+# STAGE 2 - MIGRATION
+#
+# Associate this deployment job with an Azure DevOps Environment
+# configured with an Approval check.
+# ============================================================
+- stage: Migration
+  displayName: 'Migrate NSG Flow Logs'
+  dependsOn: Analysis
+  condition: succeeded()
+
+  jobs:
+  - deployment: RunMigration
+    displayName: 'Run Flow Log migration'
+
+    # Create this Environment in Azure DevOps:
+    # Pipelines -> Environments -> nsg-flowlogs-production
+    #
+    # Add an Approval check to the Environment.
+    environment: 'nsg-flowlogs-production'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - checkout: self
+
+          - task: AzurePowerShell@5
+            displayName: 'Run migration'
+            inputs:
+              azureSubscription: '${{ parameters.azureServiceConnection }}'
+              ScriptType: InlineScript
+              azurePowerShellVersion: LatestVersion
+              pwsh: true
+              Inline: |
+                $ErrorActionPreference = "Stop"
+
+                Set-AzContext `
+                  -SubscriptionId "${{ parameters.subscriptionId }}"
+
+                $scriptPath = "$(Build.SourcesDirectory)/MigrationFromNsgToAzureFlowLogging.ps1"
+                $configPath = "$(Build.SourcesDirectory)/${{ parameters.configFile }}"
+
+                if ("${{ parameters.migrationMode }}" -eq "aggregation") {
+                    $migrationOption = "2"
+                }
+                else {
+                    $migrationOption = "3"
+                }
+
+                Write-Host "================================================"
+                Write-Host "NSG FLOW LOG MIGRATION"
+                Write-Host "================================================"
+                Write-Host "Subscription: ${{ parameters.subscriptionId }}"
+                Write-Host "Region:       ${{ parameters.region }}"
+                Write-Host "Mode:         ${{ parameters.migrationMode }}"
+                Write-Host "================================================"
+
+                #
+                # Interactive sequence:
+                #
+                # 1 -> Run analysis
+                # config file
+                # blank -> default 16 threads
+                # 2/3 -> migrate with/without aggregation
+                #
+                $answers = @(
+                    "1",
+                    $configPath,
+                    "",
+                    $migrationOption
+                )
+
+                $inputFile = "$(Agent.TempDirectory)/migration-input.txt"
+
+                $answers -join "`n" |
+                    Set-Content -Path $inputFile -NoNewline
+
+                Get-Content $inputFile |
+                    pwsh -NoProfile -File $scriptPath
+
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Migration failed with exit code $LASTEXITCODE"
+                }
+
+          - task: CopyFiles@2
+            displayName: 'Collect migration reports'
+            condition: always()
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)'
+              Contents: |
+                *.html
+              TargetFolder: '$(Build.ArtifactStagingDirectory)/migration'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish migration report'
+            condition: always()
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/migration'
+              artifact: 'NSG-FlowLog-Migration'
