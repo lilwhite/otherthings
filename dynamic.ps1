@@ -15,297 +15,249 @@
 #>
 
 param (
-    [string]$OutputPath = ".\UpdateManager-Audit"
+    [string]$OutputPath = "./UpdateManager-Audit"
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
-# ------------------------------------------------------------
-# Functions
-# ------------------------------------------------------------
+$centralSub = "e76d4c12-0b6b-4a47-a714-fa2302974203"
+$centralRG  = "scb-core-mgt-updatemgr-rg"
 
-function Write-Section {
-    param([string]$Message)
+$targetSchedules = @(
+    "Dev 1",
+    "Dev 2",
+    "Mgt 1",
+    "Mgt 2",
+    "Prd 1",
+    "Prd 2"
+)
 
-    Write-Host ""
-    Write-Host "============================================================"
-    Write-Host $Message
-    Write-Host "============================================================"
-}
+New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 
-# ------------------------------------------------------------
-# Prerequisites
-# ------------------------------------------------------------
+Write-Host ""
+Write-Host "========================================"
+Write-Host " Azure Update Manager - Dynamic Scope Audit"
+Write-Host "========================================"
+Write-Host ""
 
-Write-Section "Checking Azure connection"
+# ----------------------------------------------------------
+# 1. Get subscriptions
+# ----------------------------------------------------------
 
-$account = az account show 2>$null | ConvertFrom-Json
-
-if (-not $account) {
-    throw "Not logged into Azure. Run 'az login' first."
-}
-
-Write-Host "Tenant       : $($account.tenantId)"
-Write-Host "Subscription : $($account.name)"
-Write-Host "ID           : $($account.id)"
-
-if (-not (Test-Path $OutputPath)) {
-    New-Item `
-        -ItemType Directory `
-        -Path $OutputPath `
-        -Force | Out-Null
-}
-
-# ------------------------------------------------------------
-# Get accessible subscriptions
-# ------------------------------------------------------------
-
-Write-Section "Getting accessible subscriptions"
+Write-Host "[1/4] Getting subscriptions..."
 
 $subscriptions = az account list `
     --query "[?state=='Enabled'].{Name:name,Id:id}" `
     -o json | ConvertFrom-Json
 
-$subscriptions |
-    Format-Table Name, Id -AutoSize
+Write-Host "Found $($subscriptions.Count) accessible subscriptions."
+Write-Host ""
 
-$subscriptions |
-    Export-Csv `
-        "$OutputPath\subscriptions.csv" `
-        -NoTypeInformation
+# ----------------------------------------------------------
+# 2. Get Maintenance Configurations
+# ----------------------------------------------------------
 
-# ------------------------------------------------------------
-# Maintenance Configurations
-# ------------------------------------------------------------
+Write-Host "[2/4] Getting Maintenance Configurations..."
 
-Write-Section "Discovering Maintenance Configurations"
+$query = @"
+Resources
+| where type =~ 'microsoft.maintenance/maintenanceconfigurations'
+| where subscriptionId == '$centralSub'
+| where resourceGroup =~ '$centralRG'
+| project name, id, subscriptionId, resourceGroup, location,
+          maintenanceScope=tostring(properties.maintenanceScope)
+"@
 
-$maintenanceConfigs = @()
+$result = az graph query `
+    -q $query `
+    --first 1000 `
+    -o json | ConvertFrom-Json
 
-foreach ($sub in $subscriptions) {
+$configurations = $result.data
 
-    Write-Host "Scanning: $($sub.Name)"
+$targetConfigs = @()
 
-    $url = "/subscriptions/$($sub.Id)/providers/Microsoft.Maintenance/maintenanceConfigurations?api-version=2023-04-01"
+foreach ($config in $configurations) {
 
-    try {
+    foreach ($schedule in $targetSchedules) {
 
-        $result = az rest `
-            --method GET `
-            --url $url `
-            -o json | ConvertFrom-Json
+        if ($config.name -like "$schedule -*") {
 
-        foreach ($config in $result.value) {
-
-            $maintenanceConfigs += [PSCustomObject]@{
-                SubscriptionName = $sub.Name
-                SubscriptionId   = $sub.Id
-                Name             = $config.name
-                ResourceGroup    = ($config.id -split "/")[4]
-                Location         = $config.location
-                MaintenanceScope = $config.properties.maintenanceScope
-                Id               = $config.id
-            }
+            $targetConfigs += $config
+            break
         }
-
-    }
-    catch {
-        Write-Warning "Unable to read Maintenance Configurations from $($sub.Name)"
     }
 }
 
-$maintenanceConfigs |
-    Format-Table `
-        SubscriptionName,
-        Name,
-        ResourceGroup,
-        MaintenanceScope `
-        -AutoSize
+Write-Host "Relevant Maintenance Configurations:"
+$targetConfigs |
+    Select-Object name |
+    Format-Table -AutoSize
 
-$maintenanceConfigs |
-    Export-Csv `
-        "$OutputPath\maintenance-configurations.csv" `
-        -NoTypeInformation
+# ----------------------------------------------------------
+# 3. Scan subscription assignments
+# ----------------------------------------------------------
 
-# ------------------------------------------------------------
-# Dynamic Scope assignments - Azure Resource Graph
-# ------------------------------------------------------------
+Write-Host ""
+Write-Host "[3/4] Scanning Dynamic Scope assignments..."
+Write-Host ""
 
-Write-Section "Discovering Dynamic Scope assignments"
+$allAssignments = @()
 
-$assignments = @()
+$total = $subscriptions.Count
+$current = 0
 
 foreach ($sub in $subscriptions) {
 
-    Write-Host "Scanning assignments: $($sub.Name)"
+    $current++
 
-    $query = @"
-Resources
-| where type =~ 'microsoft.maintenance/configurationassignments'
-| project
-    id,
-    name,
-    subscriptionId,
-    location,
-    maintenanceConfigurationId = tostring(properties.maintenanceConfigurationId),
-    resourceId = tostring(properties.resourceId),
-    filter = properties.filter
-"@
+    Write-Host "[$current/$total] $($sub.Name)"
 
     try {
 
-        $result = az graph query `
-            -q $query `
-            --subscriptions $sub.Id `
-            --first 1000 `
-            -o json | ConvertFrom-Json
+        $raw = az maintenance assignment list-subscription `
+            --subscription $sub.Id `
+            -o json `
+            --only-show-errors 2>$null
 
-        foreach ($assignment in $result.data) {
+        if (-not $raw) {
+
+            Write-Host "        No assignments returned."
+            continue
+        }
+
+        $assignments = $raw | ConvertFrom-Json
+
+        if ($assignments.Count -eq 0) {
+
+            Write-Host "        No assignments."
+            continue
+        }
+
+        Write-Host "        Found $($assignments.Count) assignment(s)."
+
+        foreach ($assignment in $assignments) {
+
+            # Only interested in our six Maintenance Configurations
+
+            $matchingConfig = $targetConfigs |
+                Where-Object {
+                    $_.id -eq $assignment.maintenanceConfigurationId
+                }
+
+            if (-not $matchingConfig) {
+                continue
+            }
 
             $filter = $assignment.filter
 
-            $assignments += [PSCustomObject]@{
+            $allAssignments += [PSCustomObject]@{
 
                 SubscriptionName = $sub.Name
-                SubscriptionId   = $sub.Id
-                AssignmentName   = $assignment.name
 
-                MaintenanceConfigurationId =
-                    $assignment.maintenanceConfigurationId
+                SubscriptionId = $sub.Id
+
+                AssignmentName = $assignment.name
+
+                MaintenanceConfiguration =
+                    $matchingConfig.name
 
                 Locations =
-                    ($filter.locations -join ",")
+                    if ($filter.locations) {
+                        $filter.locations -join ";"
+                    } else {
+                        ""
+                    }
 
                 ResourceGroups =
-                    ($filter.resourceGroups -join ",")
+                    if ($filter.resourceGroups) {
+                        $filter.resourceGroups -join ";"
+                    } else {
+                        ""
+                    }
 
                 ResourceTypes =
-                    ($filter.resourceTypes -join ",")
+                    if ($filter.resourceTypes) {
+                        $filter.resourceTypes -join ";"
+                    } else {
+                        ""
+                    }
 
                 OsTypes =
-                    ($filter.osTypes -join ",")
+                    if ($filter.osTypes) {
+                        $filter.osTypes -join ";"
+                    } else {
+                        ""
+                    }
 
                 TagOperator =
-                    $filter.tagSettings.filterOperator
+                    if ($filter.tagSettings) {
+                        $filter.tagSettings.filterOperator
+                    } else {
+                        ""
+                    }
 
                 Tags =
                     if ($filter.tagSettings.tags) {
                         $filter.tagSettings.tags |
                             ConvertTo-Json -Compress -Depth 10
-                    }
-                    else {
+                    } else {
                         ""
                     }
 
-                AssignmentId = $assignment.id
+                AssignmentId =
+                    $assignment.id
             }
         }
     }
     catch {
 
-        Write-Warning "Unable to query assignments from $($sub.Name): $($_.Exception.Message)"
+        Write-Warning "        Failed: $($_.Exception.Message)"
     }
 }
 
-# ------------------------------------------------------------
-# Display results
-# ------------------------------------------------------------
-
-Write-Section "Dynamic Scopes"
-
-$assignments |
-    Format-Table `
-        SubscriptionName,
-        AssignmentName,
-        ResourceGroups,
-        Locations,
-        OsTypes,
-        Tags `
-        -AutoSize
-
-$assignments |
-    Export-Csv `
-        "$OutputPath\dynamic-scopes.csv" `
-        -NoTypeInformation
-
-# ------------------------------------------------------------
-# Search for Bifrost
-# ------------------------------------------------------------
-
-Write-Section "Searching for Bifrost VM"
-
-$bifrostQuery = @"
-Resources
-| where type =~ 'microsoft.compute/virtualmachines'
-| where name =~ 'conp1weugvml-bifrost-001'
-| project
-    name,
-    subscriptionId,
-    resourceGroup,
-    location,
-    tags,
-    id
-"@
-
-try {
-
-    $bifrost = az graph query `
-        -q $bifrostQuery `
-        --first 1000 `
-        -o json |
-        ConvertFrom-Json
-
-    if ($bifrost.data.Count -eq 0) {
-
-        Write-Warning "Bifrost VM not found."
-
-    }
-    else {
-
-        Write-Host ""
-        Write-Host "Bifrost VM found:"
-        Write-Host ""
-
-        $bifrost.data |
-            Format-List
-
-        $bifrost.data |
-            Select-Object `
-                name,
-                subscriptionId,
-                resourceGroup,
-                location,
-                @{N="Tags";E={
-                    $_.tags | ConvertTo-Json -Compress
-                }},
-                id |
-            Export-Csv `
-                "$OutputPath\bifrost.csv" `
-                -NoTypeInformation
-    }
-
-}
-catch {
-
-    Write-Warning `
-        "Unable to query Resource Graph. Check that the resource-graph extension is available."
-
-}
-
-# ------------------------------------------------------------
-# Summary
-# ------------------------------------------------------------
-
-Write-Section "Audit completed"
-
-Write-Host "Output directory:"
-Write-Host (Resolve-Path $OutputPath)
+# ----------------------------------------------------------
+# 4. Results
+# ----------------------------------------------------------
 
 Write-Host ""
-Write-Host "Generated files:"
-Write-Host " - subscriptions.csv"
-Write-Host " - maintenance-configurations.csv"
-Write-Host " - dynamic-scopes.csv"
-Write-Host " - bifrost.csv (if VM found)"
+Write-Host "[4/4] Results"
 Write-Host ""
-Write-Host "NO Azure resources were modified."
+
+if ($allAssignments.Count -eq 0) {
+
+    Write-Warning "No matching Dynamic Scope assignments found."
+
+}
+else {
+
+    $allAssignments |
+        Sort-Object SubscriptionName, MaintenanceConfiguration |
+        Format-Table `
+            SubscriptionName,
+            MaintenanceConfiguration,
+            Locations,
+            OsTypes,
+            TagOperator,
+            Tags `
+            -AutoSize
+
+    $csv = Join-Path $OutputPath "dynamic-scopes.csv"
+
+    $allAssignments |
+        Sort-Object SubscriptionName, MaintenanceConfiguration |
+        Export-Csv `
+            $csv `
+            -NoTypeInformation `
+            -Encoding UTF8
+
+    Write-Host ""
+    Write-Host "CSV generated:"
+    Write-Host $csv
+}
+
+Write-Host ""
+Write-Host "========================================"
+Write-Host " Audit finished"
+Write-Host " No Azure resources were modified."
+Write-Host "========================================"
