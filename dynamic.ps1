@@ -3,7 +3,9 @@
 .SYNOPSIS
 Read-only Azure Update Manager configuration and Dynamic Scope audit.
 .DESCRIPTION
-Requires Azure CLI, an authenticated session and the maintenance extension.
+Requires Azure CLI, an authenticated session, maintenance and resource-graph extensions.
+Version 2: discovers subscription-level assignments through Resource Graph.
+Resource Graph results reflect indexed resources visible to the signed-in identity.
 Does not modify Azure resources or switch the active subscription.
 Writes local reports and raw JSON. Does not evaluate VM membership.
 Each invocation creates a separate output directory.
@@ -82,13 +84,72 @@ function Normalize-Id {
     return $Id.Trim().TrimEnd('/').ToLowerInvariant()
 }
 
-Write-Host "Azure Update Manager audit - READ ONLY"
+function Get-GraphAssignments {
+    param([string]$SubscriptionId)
+    # Keep id and avoid take/limit so Resource Graph can return a continuation token.
+    $query = @'
+maintenanceresources
+| where type =~ 'microsoft.maintenance/configurationassignments'
+| where id matches regex @'(?i)^/subscriptions/[^/]+/providers/microsoft\.maintenance/configurationassignments/[^/]+/?$'
+| project id, name, subscriptionId, properties
+| order by id asc
+'@
+    $buffer = [System.Collections.Generic.List[object]]::new()
+    $seenIds = @{}
+    $seenTokens = @{}
+    $token = ''
+    $page = 0
+    do {
+        $page++
+        $cliArgs = @('graph','query','-q',$query,'--subscriptions',$SubscriptionId,'--first','1000')
+        if ($token) { $cliArgs += @('--skip-token',$token) }
+        $response = Invoke-AzJson -Arguments $cliArgs -Label "assignments-$SubscriptionId-page-$page"
+        if (-not $response.PSObject.Properties['data']) {
+            throw 'Resource Graph response has no data property. Inspect the saved JSON.'
+        }
+        $items = @($response.data | Where-Object { $null -ne $_ })
+        foreach ($item in $items) {
+            $idKey = Normalize-Id $item.id
+            if (-not $idKey) { throw 'Resource Graph returned an assignment without id.' }
+            if ($item.subscriptionId -ine $SubscriptionId) { throw 'Resource Graph returned an unexpected subscription.' }
+            if ($seenIds.ContainsKey($idKey)) {
+                throw 'Duplicate assignment across pages; inventory may have changed. Rerun the audit.'
+            }
+            $seenIds[$idKey] = $true
+            $buffer.Add($item)
+        }
+        $token = [string]$response.skip_token
+        if (-not $token) { $token = [string]$response.'$skipToken' }
+        Write-Host "  Graph page $page : $($items.Count) scope(s); accumulated: $($buffer.Count)"
+        if ($token) {
+            if ($items.Count -eq 0 -or $seenTokens.ContainsKey($token)) {
+                throw 'Resource Graph pagination did not advance. Inspect saved pages.'
+            }
+            $seenTokens[$token] = $true
+        } else {
+            $total = $response.total_records
+            if ($null -eq $total) { $total = $response.totalRecords }
+            if (($null -ne $total -and [long]$total -gt $buffer.Count) -or
+                ([string]$response.resultTruncated -ieq 'true') -or
+                ([string]$response.result_truncated -ieq 'true')) {
+                throw 'Resource Graph results are incomplete and no continuation token was returned.'
+            }
+        }
+    } while ($token)
+    # Emit only after every page succeeded; failed scans cannot look complete.
+    return $buffer.ToArray()
+}
+
+Write-Host "Azure Update Manager audit v2 - Resource Graph - READ ONLY"
 Write-Host "Reports: $runPath"
 try {
     if (-not (Get-Command az -ErrorAction SilentlyContinue)) { throw 'Azure CLI (az) is not installed or not in PATH.' }
     $extensions = @(Get-Items (Invoke-AzJson -Arguments @('extension','list') -Label 'extensions'))
     if (-not ($extensions | Where-Object { $_.name -eq 'maintenance' })) {
         throw 'Install the CLI extension first: az extension add --name maintenance'
+    }
+    if (-not ($extensions | Where-Object { $_.name -eq 'resource-graph' })) {
+        throw 'Install the CLI extension first: az extension add --name resource-graph'
     }
 
     Write-Host '[1/4] Reading accessible subscriptions'
@@ -125,10 +186,11 @@ try {
     }
     $configIndex = @{}
     foreach ($config in $targetConfigs) { $configIndex[(Normalize-Id $config.id)] = $config.name }
+    $targetConfigs | Select-Object name,id | Export-Csv -LiteralPath (Join-Path $runPath 'target-configurations.csv') -NoTypeInformation -Encoding UTF8
 
     $rows = [System.Collections.Generic.List[object]]::new()
     $status = [System.Collections.Generic.List[object]]::new()
-    Write-Host '[3/4] Reading subscription assignments'
+    Write-Host '[3/4] Reading Dynamic Scopes via Resource Graph (all pages per subscription)'
     $current = 0
     foreach ($sub in $subscriptions) {
         $current++
@@ -137,8 +199,7 @@ try {
         $matched = 0
         $invalid = 0
         try {
-            $cliArgs = @('maintenance','assignment','list-subscription','--subscription',$sub.id)
-            $assignments = @(Get-Items (Invoke-AzJson -Arguments $cliArgs -Label "assignments-$($sub.id)"))
+            $assignments = @(Get-GraphAssignments -SubscriptionId $sub.id)
             $found = $assignments.Count
             foreach ($assignment in $assignments) {
                 $configId = [string](Get-PropertyValue $assignment 'maintenanceConfigurationId')
@@ -160,10 +221,13 @@ try {
                     Locations = @($filter.locations) -join ';'
                     ResourceGroups = @($filter.resourceGroups) -join ';'
                     ResourceTypes = @($filter.resourceTypes) -join ';'
+                    ResourceIds = @($filter.resourceIds) -join ';'
+                    AvailabilityZones = @($filter.availabilityZones) -join ';'
                     OsTypes = @($filter.osTypes) -join ';'
                     TagOperator = $filter.tagSettings.filterOperator
                     Tags = $(if ($null -ne $filter.tagSettings.tags) { ConvertTo-Json -InputObject $filter.tagSettings.tags -Compress -Depth 30 } else { '' })
                     FilterPresent = ($null -ne $filter)
+                    FilterJson = $(if ($null -ne $filter) { ConvertTo-Json -InputObject $filter -Compress -Depth 40 } else { '' })
                     AssignmentId = $assignment.id
                 })
             }
@@ -175,6 +239,8 @@ try {
             $status.Add([PSCustomObject]@{ SubscriptionName=$sub.name; SubscriptionId=$sub.id; Status='Failed'; Returned=$found; MatchingDynamicScopes=$matched; MissingConfigurationId=$invalid; Error=$_.Exception.Message })
             Write-Warning $_.Exception.Message
         }
+        # Keep progress on disk even if the run is interrupted later.
+        $status | Export-Csv -LiteralPath (Join-Path $runPath 'subscription-status.csv') -NoTypeInformation -Encoding UTF8
     }
 
     Write-Host '[4/4] Reports'
@@ -194,6 +260,7 @@ try {
     if ($issues -gt 0) { Write-Warning "Audit incomplete or needs review: $issues subscription(s). See subscription-status.csv and stderr files." }
     Write-Host "Matching dynamic scopes: $($matches.Count). Reports: $runPath"
     Write-Host 'No Azure resources modified. VM membership was NOT evaluated.'
+    Write-Host 'Coverage is limited to indexed resources visible to this identity. An empty Graph response is not proof that no scopes exist.'
 }
 catch {
     $_.Exception.Message | Set-Content -LiteralPath (Join-Path $runPath 'fatal-error.txt') -Encoding UTF8
