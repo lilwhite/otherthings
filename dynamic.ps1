@@ -128,7 +128,7 @@ $maintenanceConfigs |
         -NoTypeInformation
 
 # ------------------------------------------------------------
-# Dynamic Scope assignments
+# Dynamic Scope assignments - Azure Resource Graph
 # ------------------------------------------------------------
 
 Write-Section "Discovering Dynamic Scope assignments"
@@ -139,29 +139,39 @@ foreach ($sub in $subscriptions) {
 
     Write-Host "Scanning assignments: $($sub.Name)"
 
-    $url = "/subscriptions/$($sub.Id)/providers/Microsoft.Maintenance/configurationAssignments?api-version=2023-04-01"
+    $query = @"
+Resources
+| where type =~ 'microsoft.maintenance/configurationassignments'
+| project
+    id,
+    name,
+    subscriptionId,
+    location,
+    maintenanceConfigurationId = tostring(properties.maintenanceConfigurationId),
+    resourceId = tostring(properties.resourceId),
+    filter = properties.filter
+"@
 
     try {
 
-        $result = az rest `
-            --method GET `
-            --url $url `
+        $result = az graph query `
+            -q $query `
+            --subscriptions $sub.Id `
+            --first 1000 `
             -o json | ConvertFrom-Json
 
-        foreach ($assignment in $result.value) {
+        foreach ($assignment in $result.data) {
 
-            $filter = $assignment.properties.filter
+            $filter = $assignment.filter
 
             $assignments += [PSCustomObject]@{
 
                 SubscriptionName = $sub.Name
-
-                SubscriptionId = $sub.Id
-
-                AssignmentName = $assignment.name
+                SubscriptionId   = $sub.Id
+                AssignmentName   = $assignment.name
 
                 MaintenanceConfigurationId =
-                    $assignment.properties.maintenanceConfigurationId
+                    $assignment.maintenanceConfigurationId
 
                 Locations =
                     ($filter.locations -join ",")
@@ -181,22 +191,19 @@ foreach ($sub in $subscriptions) {
                 Tags =
                     if ($filter.tagSettings.tags) {
                         $filter.tagSettings.tags |
-                        ConvertTo-Json -Compress
+                            ConvertTo-Json -Compress -Depth 10
                     }
                     else {
                         ""
                     }
 
-                AssignmentId =
-                    $assignment.id
+                AssignmentId = $assignment.id
             }
         }
-
     }
     catch {
 
-        Write-Warning `
-            "Unable to read assignments from $($sub.Name)"
+        Write-Warning "Unable to query assignments from $($sub.Name): $($_.Exception.Message)"
     }
 }
 
