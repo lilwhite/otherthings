@@ -1,1 +1,0 @@
-az graph query -q "Resources | where type =~ 'microsoft.maintenance/maintenanceconfigurations' | project name, subscriptionId, resourceGroup, location, maintenanceScope=tostring(properties.maintenanceScope)" --first 1000 --query "data" -o table
