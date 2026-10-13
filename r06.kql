@@ -1,0 +1,12 @@
+Resources
+| where type =~ 'microsoft.containerservice/managedclusters'
+| extend p = properties
+| project subscriptionId, resourceGroup, name, location,
+          k8sVersion = tostring(p.kubernetesVersion),
+          privateCluster = tostring(p.apiServerAccessProfile.enablePrivateCluster),
+          authorizedIpRanges = array_length(p.apiServerAccessProfile.authorizedIPRanges),
+          localAccountsDisabled = tostring(p.disableLocalAccounts),
+          entraIdManaged = tostring(p.aadProfile.managed),
+          azureRbac = tostring(p.aadProfile.enableAzureRBAC),
+          networkPolicy = tostring(p.networkProfile.networkPolicy),
+          powerState = tostring(p.powerState.code)

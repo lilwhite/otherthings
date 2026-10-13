@@ -1,0 +1,8 @@
+securityresources
+| where type == 'microsoft.security/assessments'
+| where tostring(properties.status.code) == 'Unhealthy'
+| extend severity = tostring(properties.metadata.severity),
+         recommendation = tostring(properties.displayName)
+| where severity in ('High', 'Medium')
+| summarize recursos = count(), suscripciones = dcount(subscriptionId) by severity, recommendation
+| order by severity asc, recursos desc

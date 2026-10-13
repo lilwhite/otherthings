@@ -1,0 +1,11 @@
+authorizationresources
+| where type =~ 'microsoft.authorization/roleassignments'
+| extend roleId = tolower(extract(@'roleDefinitions/([^/]+)$', 1, tostring(properties.roleDefinitionId)))
+| extend role = case(roleId == '8e3af657-a8ff-443c-a75c-2fe8c4bcb635', 'Owner',
+                     roleId == '18d7d88d-d35e-4fb5-a5c3-7773c20a72d9', 'User Access Administrator',
+                     roleId == 'f58310d9-a9f6-439a-9e8d-f62e7b41a168', 'RBAC Administrator', '')
+| where isnotempty(role)
+| project role, scope = tostring(properties.scope),
+          principalType = tostring(properties.principalType),
+          principalId = tostring(properties.principalId), subscriptionId
+| order by role asc, scope asc

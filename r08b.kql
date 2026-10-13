@@ -1,0 +1,4 @@
+union resources, securityresources
+| where type =~ 'microsoft.security/locations/jitnetworkaccesspolicies'
+| project subscriptionId, resourceGroup, name,
+          vms = array_length(properties.virtualMachines)

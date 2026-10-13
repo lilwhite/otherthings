@@ -1,0 +1,5 @@
+securityresources
+| where type == 'microsoft.security/pricings'
+| summarize suscripciones = dcount(subscriptionId)
+    by plan = name, tier = tostring(properties.pricingTier)
+| order by plan asc, tier asc

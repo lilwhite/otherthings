@@ -1,0 +1,9 @@
+Resources
+| where type =~ 'microsoft.web/sites'
+| project subscriptionId, resourceGroup, name, kind, location,
+          state = tostring(properties.state),
+          httpsOnly = tostring(properties.httpsOnly),
+          publicNetworkAccess = tostring(properties.publicNetworkAccess),
+          privateEndpoints = array_length(properties.privateEndpointConnections),
+          hostNames = strcat_array(properties.hostNames, ', ')
+| order by publicNetworkAccess asc

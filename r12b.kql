@@ -1,0 +1,10 @@
+securityresources
+| where type == 'microsoft.security/assessments'
+| where tostring(properties.status.code) == 'Unhealthy'
+    and tostring(properties.metadata.severity) == 'High'
+| extend resId = tostring(properties.resourceDetails.Id)
+| project recommendation = tostring(properties.displayName), subscriptionId,
+          resourceGroup = extract(@'(?i)/resourceGroups/([^/]+)', 1, resId),
+          resource = extract(@'/([^/]+)$', 1, resId),
+          resourceType = extract(@'(?i)/providers/([^/]+/[^/]+)/', 1, resId)
+| order by recommendation asc

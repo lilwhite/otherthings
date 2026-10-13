@@ -1,0 +1,11 @@
+Resources
+| where type =~ 'microsoft.network/firewallpolicies/rulecollectiongroups'
+| mv-expand rc = properties.ruleCollections
+| mv-expand rule = rc.rules
+| extend src = strcat_array(rule.sourceAddresses, ','),
+         dst = strcat_array(rule.destinationAddresses, ','),
+         ports = strcat_array(rule.destinationPorts, ',')
+| where src == '*' or dst == '*' or ports == '*'
+| project subscriptionId, rcg = name, collection = tostring(rc.name),
+          action = tostring(rc.action.type), rule = tostring(rule.name),
+          ruleType = tostring(rule.ruleType), src, dst, ports

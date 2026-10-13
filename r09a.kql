@@ -1,0 +1,14 @@
+Resources
+| where type =~ 'microsoft.network/azurefirewalls'
+| mv-expand rc = properties.networkRuleCollections
+| mv-expand rule = rc.properties.rules
+| extend src = strcat_array(rule.sourceAddresses, ','),
+         dst = strcat_array(rule.destinationAddresses, ','),
+         ports = strcat_array(rule.destinationPorts, ',')
+| where src == '*' or dst == '*' or ports == '*' or src has '0.0.0.0/0' or dst has '0.0.0.0/0'
+| project subscriptionId, firewall = name, collection = tostring(rc.name),
+          priority = toint(rc.properties.priority), action = tostring(rc.properties.action.type),
+          rule = tostring(rule.name), src, dst, ports,
+          protocols = strcat_array(rule.protocols, ','),
+          srcIpGroups = strcat_array(rule.sourceIpGroups, ','),
+          dstFqdns = strcat_array(rule.destinationFqdns, ',')

@@ -1,0 +1,19 @@
+Resources
+| where type =~ 'microsoft.network/networksecuritygroups'
+| mv-expand rule = properties.securityRules
+| extend r = rule.properties
+| where tostring(r.direction) == 'Inbound' and tostring(r.access) == 'Allow'
+| extend srcList = iff(isnotempty(tostring(r.sourceAddressPrefix)),
+                       pack_array(tostring(r.sourceAddressPrefix)), r.sourceAddressPrefixes)
+| mv-expand src = srcList
+| extend src = tostring(src)
+| where src in ('*', 'Internet', '0.0.0.0/0', '0.0.0.0')
+| extend ports = iff(isnotempty(tostring(r.destinationPortRange)),
+                     tostring(r.destinationPortRange), strcat_array(r.destinationPortRanges, ','))
+| extend mgmtPort = ports == '*' or ports matches regex @'(^|,)(22|3389|5985|5986|445|1433|3306|5432)(,|$)'
+| project subscriptionId, resourceGroup, nsg = name, rule = tostring(rule.name),
+          priority = toint(r.priority), src, ports, mgmtPort,
+          dest = tostring(r.destinationAddressPrefix),
+          subnets = array_length(properties.subnets),
+          nics = array_length(properties.networkInterfaces)
+| order by mgmtPort desc, src asc

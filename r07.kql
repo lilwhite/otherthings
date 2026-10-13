@@ -1,0 +1,21 @@
+Resources
+| where type =~ 'microsoft.compute/virtualmachines'
+| extend p = properties, vmId = tolower(id)
+| project vmId, subscriptionId, resourceGroup, name, location,
+          os = tostring(p.storageProfile.osDisk.osType),
+          power = tostring(p.extended.instanceView.powerState.code),
+          adminUser = tostring(p.osProfile.adminUsername),
+          linuxPasswordAuthDisabled = tostring(p.osProfile.linuxConfiguration.disablePasswordAuthentication),
+          sshKeys = array_length(p.osProfile.linuxConfiguration.ssh.publicKeys),
+          encryptionAtHost = tostring(p.securityProfile.encryptionAtHost),
+          securityType = tostring(p.securityProfile.securityType),
+          repository = tostring(tags.repository)
+| join kind=leftouter (
+    Resources
+    | where type =~ 'microsoft.compute/virtualmachines/extensions'
+    | extend vmId = tolower(tostring(split(id, '/extensions/')[0]))
+    | summarize extSet = make_set(name) by vmId
+  ) on vmId
+| extend extensions = strcat_array(extSet, ', ')
+| project-away vmId1, extSet
+| order by os asc, name asc

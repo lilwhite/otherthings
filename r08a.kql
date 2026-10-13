@@ -1,0 +1,8 @@
+Resources
+| where type =~ 'microsoft.network/bastionhosts'
+| project subscriptionId, resourceGroup, name, location,
+          sku = tostring(sku.name),
+          nativeClientTunneling = tostring(properties.enableTunneling),
+          ipConnect = tostring(properties.enableIpConnect),
+          shareableLink = tostring(properties.enableShareableLink),
+          fileCopy = tostring(properties.enableFileCopy)

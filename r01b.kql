@@ -1,0 +1,8 @@
+Resources
+| where type =~ 'microsoft.network/applicationgateways'
+| project subscriptionId, resourceGroup, name, location,
+          tier = tostring(properties.sku.tier),
+          wafConfigEnabled = tostring(properties.webApplicationFirewallConfiguration.enabled),
+          wafPolicy = tostring(properties.firewallPolicy.id),
+          frontends = array_length(properties.frontendIPConfigurations),
+          listeners = array_length(properties.httpListeners)

@@ -1,0 +1,10 @@
+Resources
+| where type =~ 'microsoft.network/publicipaddresses'
+| extend attachedTo = tostring(properties.ipConfiguration.id)
+| extend attachedType = tostring(split(attachedTo, '/')[7]),
+         attachedName = tostring(split(attachedTo, '/')[8])
+| project subscriptionId, resourceGroup, name, location,
+          ip = tostring(properties.ipAddress), sku = tostring(sku.name),
+          attachedType, attachedName,
+          ddos = tostring(properties.ddosSettings.protectionMode)
+| order by attachedType asc

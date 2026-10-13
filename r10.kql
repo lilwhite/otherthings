@@ -1,0 +1,7 @@
+Resources
+| where type =~ 'microsoft.compute/disks'
+| summarize discos = count(), suscripciones = dcount(subscriptionId)
+    by encryption = tostring(properties.encryption.type),
+       networkAccessPolicy = tostring(properties.networkAccessPolicy),
+       publicNetworkAccess = tostring(properties.publicNetworkAccess)
+| order by discos desc

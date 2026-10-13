@@ -1,0 +1,16 @@
+Resources
+| where type =~ 'microsoft.storage/storageaccounts'
+| extend p = properties
+| project subscriptionId, resourceGroup, name, location, kind,
+          allowBlobPublicAccess = tostring(p.allowBlobPublicAccess),
+          publicNetworkAccess = tostring(p.publicNetworkAccess),
+          defaultAction = tostring(p.networkAcls.defaultAction),
+          allowSharedKeyAccess = tostring(p.allowSharedKeyAccess),
+          minTls = tostring(p.minimumTlsVersion),
+          httpsOnly = tostring(p.supportsHttpsTrafficOnly),
+          privateEndpoints = array_length(p.privateEndpointConnections),
+          repository = tostring(tags.repository)
+| extend riesgo = case(allowBlobPublicAccess == 'true', 'Blob público permitido',
+                       defaultAction == 'Allow' and publicNetworkAccess != 'Disabled', 'Red pública abierta',
+                       '')
+| order by riesgo desc

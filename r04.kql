@@ -1,0 +1,18 @@
+Resources
+| where type in~ ('microsoft.keyvault/vaults', 'microsoft.sql/servers',
+    'microsoft.containerregistry/registries', 'microsoft.documentdb/databaseaccounts',
+    'microsoft.eventhub/namespaces', 'microsoft.servicebus/namespaces',
+    'microsoft.dbforpostgresql/flexibleservers', 'microsoft.dbformysql/flexibleservers',
+    'microsoft.cache/redis', 'microsoft.cognitiveservices/accounts',
+    'microsoft.apimanagement/service', 'microsoft.search/searchservices',
+    'microsoft.datafactory/factories')
+| extend publicNetworkAccess = tostring(coalesce(properties.publicNetworkAccess, properties.network.publicNetworkAccess)),
+         defaultAction = tostring(coalesce(properties.networkAcls.defaultAction, properties.networkRuleSet.defaultAction)),
+         privateEndpoints = array_length(properties.privateEndpointConnections),
+         minTls = tostring(coalesce(properties.minimalTlsVersion, properties.minimumTlsVersion)),
+         acrAdminUser = tostring(properties.adminUserEnabled),
+         kvPurgeProtection = tostring(properties.enablePurgeProtection),
+         kvRbac = tostring(properties.enableRbacAuthorization)
+| project subscriptionId, resourceGroup, type, name, location, publicNetworkAccess,
+          defaultAction, privateEndpoints, minTls, acrAdminUser, kvPurgeProtection, kvRbac
+| order by type asc, publicNetworkAccess asc
