@@ -1,0 +1,28 @@
+Entity	Group	Details
+Nordics	Credential management	Service principals con roles administrativos (Owner/Contributor/User Access Administrator) a nivel de suscripción y resource group en la mayoría de las suscripciones
+Nordics	Credential management	Roles privilegiados con acceso permanente (sin PIM / acceso just-in-time) en varias suscripciones
+Nordics	Credential management	Cuentas deshabilitadas que mantienen permisos de escritura u Owner sobre recursos de Azure
+Nordics	Credential management	Usuarios administradores locales compartidos entre VMs (todas las VMs utilizan únicamente dos cuentas de administrador local)
+Nordics	Credential management	Uso generalizado de access keys en storage accounts (la mayoría permite autenticación mediante shared key)
+Nordics	Credential management	Azure Container Registry con usuario admin (credencial compartida) habilitado en todos los registros
+Nordics	Credential management	Clústeres AKS con cuentas locales (clusterAdmin) habilitadas fuera de Entra ID
+Nordics	Credential management	Secretos y claves de Key Vault sin fecha de expiración y sin obligación de rotación
+Nordics	Credential management	Key Vaults sin purge protection (aprox. la mitad)
+Nordics	Credential management	Secretos de API Management (named values) almacenados en APIM en lugar de Key Vault
+Nordics	Credential management	Certificados .pfx y planes de Terraform almacenados en repositorios de código en lugar de Key Vault
+Nordics	Infrastructure access	SSH y RDP permitidos desde cualquier origen en el NSG de la subred compartida de desarrollo
+Nordics	Infrastructure access	Reglas any/any de entrada en NSGs (ASE de desarrollo y sentiment-analysis), así como FTP y remote debugging abiertos en el ASE de producción
+Nordics	Infrastructure access	Acceso a VMs mediante máquinas de salto (bastion servers)
+Nordics	Unprotected communications	Application Gateways de plataforma (dev/pre/prd) sin WAF
+Nordics	Unprotected communications	Servicios publicados directamente mediante IP pública (load balancers de AKS y APIM, y DNAT en Azure Firewall)
+Nordics	Unprotected communications	Servicios PaaS con acceso de red público y sin private endpoint (Cosmos DB, SQL, Key Vault, AI Search y Storage)
+Nordics	Unprotected communications	Storage accounts que permiten acceso público anónimo a blobs, incluidas cuentas de estado de Terraform
+Nordics	Unprotected communications	Aplicaciones web sin HTTPS forzado y App Services/Functions sin autenticación habilitada
+Nordics	Unprotected communications	Discos de VM exportables mediante SAS desde cualquier red
+Nordics	Infrastructure management automation tools	Pipelines de despliegue de management sin entorno de ADO (solo validación manual) y service connections de políticas compartidas entre todos los entornos
+Nordics	Infrastructure management automation tools	Agente de IA con capacidad para aprobar y mergear PRs de dev/stg de forma automática
+Nordics	Other	Vulnerabilidades altas sin corregir en imágenes de contenedores y nodos (OpenSSL, libc, etc.), así como clústeres AKS con versiones pendientes de actualización
+Nordics	Other	Defender for Servers habilitado únicamente en 2 suscripciones
+Nordics	Other	Contenedores ejecutándose como root, con automontaje de credenciales de API y capacidades elevadas en AKS
+Nordics	Other	VMs de plataforma fuera de los scopes de parcheo y sin backup (bastiones y DNS de management)
+Nordics	Other	Recursos temporales de builds de imágenes (VMs y Key Vaults de Packer) encendidos y con acceso público
