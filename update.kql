@@ -1,0 +1,7 @@
+patchinstallationresources
+| where type =~ 'microsoft.compute/virtualmachines/patchinstallationresults'
+| extend vm = tostring(split(id,'/')[8])
+| where vm in~ ('conp1weugvmw001','conp1weugvmw002','conp1weudnsw001','conp1weugvml-bfrost-001')
+| project vm, start = todatetime(properties.startDateTime), status = tostring(properties.status),
+    installed = toint(properties.installedPatchCount), failed = toint(properties.failedPatchCount)
+| order by vm, start desc
